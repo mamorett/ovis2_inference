@@ -6,7 +6,6 @@ import os
 from tqdm import tqdm
 import argparse
 from dotenv import load_dotenv
-from contextlib import contextmanager
 import time
 from transformers import GenerationConfig
 from gptqmodel import GPTQModel
@@ -14,55 +13,47 @@ from gptqmodel import GPTQModel
 # Suppress all warnings
 warnings.filterwarnings('ignore')
 
-
 CONFIG = {
     'model_path': 'AIDC-AI/Ovis2-16B-GPTQ-Int4',
     'device': 'cuda:0',
     'supported_formats': ['.jpg', '.jpeg', '.png', '.bmp', '.webp'],
     'max_retries': 3,
     'max_image_size': 4096 * 4096,
-    'max_file_size': 10 * 1024 * 1024  # 10MB
+    'max_file_size': 10 * 1024 * 1024,  # 10MB
+    'max_partition': 9,
+    'max_new_tokens': 1024
 }
-
-@contextmanager
-def manage_model_resources():
-    """Context manager for handling GPU memory resources."""
-    try:
-        torch.cuda.empty_cache()
-        yield
-    finally:
-        torch.cuda.empty_cache()
-
 
 def validate_image(image_path):
     try:
         with Image.open(image_path) as img:
-            if img.size[0] * img.size[1] > 4096 * 4096:
+            if img.size[0] * img.size[1] > CONFIG['max_image_size']:
                 raise ValueError("Image dimensions too large")
-            if os.path.getsize(image_path) > 10 * 1024 * 1024:  # 10MB
+            if os.path.getsize(image_path) > CONFIG['max_file_size']:
                 raise ValueError("File size too large")
     except Exception as e:
         raise ValueError(f"Invalid image file: {str(e)}")
 
-def process_batch(image_files, **kwargs):
-    total_size = sum(os.path.getsize(f) for f in image_files)
-    processed_size = 0
-    with tqdm(total=total_size, unit='B', unit_scale=True) as pbar:
-        for image in image_files:
-            # Process image
-            processed_size += os.path.getsize(image)
-            pbar.update(os.path.getsize(image))
-
-
 def load_model_and_tokenizer():
-    with manage_model_resources():
-        # Initialize tokenizer and model directly
-        model = GPTQModel.load(CONFIG['model_path'], device=CONFIG['device'], trust_remote_code=True)
-        model.model.generation_config = GenerationConfig.from_pretrained(CONFIG['model_path'])
-        text_tokenizer = model.get_text_tokenizer()
-        visual_tokenizer = model.get_visual_tokenizer()        
-        model.eval()
-        return model, text_tokenizer
+    # Set device
+    torch.cuda.set_device(CONFIG['device'])
+    
+    # Load model exactly as in the original example (no extra parameters)
+    model = GPTQModel.load(CONFIG['model_path'], device=CONFIG['device'], trust_remote_code=True)
+    
+    # Set generation config
+    try:
+        generation_config = GenerationConfig.from_pretrained(CONFIG['model_path'])
+        model.generation_config = generation_config
+        if hasattr(model, 'model') and model.model is not None:
+            model.model.generation_config = generation_config
+    except:
+        pass  # Continue without generation config if it fails
+    
+    text_tokenizer = model.get_text_tokenizer()
+    visual_tokenizer = model.get_visual_tokenizer()
+    
+    return model, text_tokenizer, visual_tokenizer
 
 def get_prompts_from_env():
     """Get all prompts from .env file that end with _PROMPT."""
@@ -74,58 +65,67 @@ def get_prompts_from_env():
             prompts[prompt_name] = value
     return prompts
 
-def process_single_image(image_path, prompt, model, tokenizer, force=False, no_save=False, quiet=False):
+def process_single_image(image_path, prompt, model, text_tokenizer, visual_tokenizer, force=False, no_save=False, quiet=False):
     try:
         validate_image(image_path)
         
         for attempt in range(CONFIG['max_retries']):
             try:
-                with manage_model_resources():
-                    output_path = image_path.with_suffix('.txt')
-                    
-                    if not no_save and output_path.exists() and not force:
-                        if not quiet:
-                            print(f"\nSkipping {image_path} - output file already exists")
-                        return True
-                        
-                    image = Image.open(image_path).convert('RGB')
-                    msgs = [{'role': 'user', 'content': [image, prompt]}]
-                    answer = model.chat(msgs=msgs, tokenizer=tokenizer)
-                    
-                    if not no_save:
-                        with open(output_path, 'w', encoding='utf-8') as f:
-                            f.write(answer)
-                        if not quiet:
-                            print(f"\nCreated output file: {output_path}")
-                    
-                    # Print response only if not in quiet mode or if no_save is True
-                    if not quiet or no_save:
-                        print(f"\nResponse for {image_path}:\n{answer}\n")
+                output_path = image_path.with_suffix('.txt')
+                
+                if not no_save and output_path.exists() and not force:
+                    if not quiet:
+                        print(f"\nSkipping {image_path} - output file already exists")
                     return True
+                
+                # Load and process image
+                images = [Image.open(image_path)]
+                query = f'<image>\n{prompt}'
+                
+                # Preprocess inputs
+                prompt_formatted, input_ids, pixel_values = model.preprocess_inputs(query, images, max_partition=CONFIG['max_partition'])
+                attention_mask = torch.ne(input_ids, text_tokenizer.pad_token_id)
+                input_ids = input_ids.unsqueeze(0).to(device=model.device)
+                attention_mask = attention_mask.unsqueeze(0).to(device=model.device)
+                if pixel_values is not None:
+                    pixel_values = pixel_values.to(dtype=visual_tokenizer.dtype, device=visual_tokenizer.device)
+                pixel_values = [pixel_values]
+                
+                # Generate with simplified parameters
+                with torch.inference_mode():
+                    gen_kwargs = {
+                        'max_new_tokens': CONFIG['max_new_tokens'],
+                        'do_sample': False,
+                        'pad_token_id': text_tokenizer.pad_token_id,
+                        'use_cache': True
+                    }
+                    
+                    output_ids = model.generate(input_ids, pixel_values=pixel_values, attention_mask=attention_mask, **gen_kwargs)[0]
+                    answer = text_tokenizer.decode(output_ids, skip_special_tokens=True)
+                
+                if not no_save:
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        f.write(answer)
+                    if not quiet:
+                        print(f"\nCreated output file: {output_path}")
+                
+                if not quiet or no_save:
+                    print(f"\nResponse for {image_path}:\n{answer}\n")
+                return True
                     
             except Exception as e:
                 if attempt == CONFIG['max_retries'] - 1:
+                    if not quiet:
+                        print(f"\nFinal error processing {image_path}: {str(e)}")
                     raise
                 if not quiet:
                     print(f"\nRetry {attempt + 1}/{CONFIG['max_retries']}: {str(e)}")
-                time.sleep(1)
+                time.sleep(2)
                 
     except Exception as e:
         if not quiet:
             print(f"\nError processing {image_path}: {str(e)}")
         return False
-
-
-def get_prompts():
-    """Get prompts from .env file and command line arguments."""
-    # Get prompts from .env
-    load_dotenv()
-    prompts = {}
-    for key, value in os.environ.items():
-        if key.endswith('_PROMPT'):
-            prompt_name = key.replace('_PROMPT', '').lower().replace('_', '-')
-            prompts[prompt_name] = value
-    return prompts    
 
 def main():
     # Get prompts from .env
@@ -147,24 +147,34 @@ def main():
 
     args = parser.parse_args()
 
-        # Determine which prompt to use
+    # Determine which prompt to use
     if args.prompt_type:
         selected_prompt = prompts[args.prompt_type]
     else:
         selected_prompt = args.prompt
-    
-    # Initialize model and tokenizer
-    print("Initializing model and tokenizer...")
-    model, tokenizer = load_model_and_tokenizer()
-    print("Initialization complete!")
+
+    # Initialize model and tokenizers
+    print("Initializing model and tokenizers...")
+    try:
+        model, text_tokenizer, visual_tokenizer = load_model_and_tokenizer()
+        print("Initialization complete!")
+        
+    except Exception as e:
+        print(f"Failed to initialize model: {e}")
+        return
     
     # Process path
     path = Path(args.path)
     if path.is_file():
         # Single file processing
-        if path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.bmp', '.webp']:
+        if path.suffix.lower() in CONFIG['supported_formats']:
             print(f"Processing single image: {path}")
-            process_single_image(path, selected_prompt, model, tokenizer, args.force, args.no_save, args.quiet)
+            success = process_single_image(path, selected_prompt, model, text_tokenizer, visual_tokenizer, 
+                               args.force, args.no_save, args.quiet)
+            if success:
+                print("Processing completed successfully!")
+            else:
+                print("Processing failed!")
     elif path.is_dir():
         image_files = []
         for ext in CONFIG['supported_formats']:
@@ -176,14 +186,13 @@ def main():
             return
             
         total_size = sum(os.path.getsize(f) for f in image_files)
-        processed_size = 0
         successful = 0
         
         with tqdm(total=total_size, unit='B', unit_scale=True) as pbar:
             for image_path in image_files:
-                if process_single_image(image_path, selected_prompt, model, tokenizer, args.force, args.no_save, args.quiet):
+                if process_single_image(image_path, selected_prompt, model, text_tokenizer, visual_tokenizer,
+                                      args.force, args.no_save, args.quiet):
                     successful += 1
-                processed_size += os.path.getsize(image_path)
                 pbar.update(os.path.getsize(image_path))
                 
         print(f"\nProcessing complete. Successfully processed {successful} out of {len(image_files)} images.")
