@@ -11,6 +11,7 @@ This project provides a Python script for running inference with the Ovis2 model
 *   Includes options to force reprocessing of existing files and to print output to the terminal without saving.
 *   Handles large images and files with configurable limits.
 *   Includes retry logic for robustness.
+*   **New:** A graphical user interface (GUI) for easier interaction.
 
 ## Installation
 
@@ -31,6 +32,10 @@ This project provides a Python script for running inference with the Ovis2 model
     Install the required Python packages:
     ```bash
     pip install -r requirements.txt
+    ```
+    For the UI, you might need to install `tkinterdnd2` for drag-and-drop support:
+    ```bash
+    pip install tkinterdnd2
     ```
 
 ## Configuration
@@ -53,9 +58,11 @@ You can define custom prompts in a `.env` file in the project's root directory. 
 
 ## Usage
 
+### Command-Line
+
 The script can be run from the command line with various options.
 
-### Command-Line Arguments
+#### Command-Line Arguments
 
 *   `path`: (Required) The path to the image file or directory to process.
 *   `-t`, `--prompt-type`: (Required, unless `-p` is used) The type of prompt to use, as defined in your `.env` file (e.g., `general`, `ocr`).
@@ -64,7 +71,7 @@ The script can be run from the command line with various options.
 *   `-n`, `--no-save`: (Optional) Do not save the output to a text file; print it to the terminal instead.
 *   `-q`, `--quiet`: (Optional) Suppress all output to the terminal, except for error messages.
 
-### Examples
+#### Examples
 
 **Process a single image with a predefined prompt:**
 ```bash
@@ -80,6 +87,32 @@ python ovis2.py /path/to/your/directory -p "What is the main subject of this ima
 ```bash
 python ovis2.py /path/to/your/image.jpg -t ocr -f -n
 ```
+
+### Graphical User Interface (GUI)
+
+The project now includes a graphical user interface for a more interactive experience.
+
+#### Running the GUI
+
+To run the GUI, execute the following command:
+```bash
+python ovis2_ui.py
+```
+
+#### GUI Features
+
+*   **Model Loading:** Load and monitor the status of the Ovis2 model.
+*   **Prompt Configuration:** Choose from predefined prompts (from the `.env` file) or write a custom prompt.
+*   **File Selection:**
+    *   Browse for single or multiple image files.
+    *   Browse for a folder of images.
+    *   Drag and drop files and folders directly onto the application window (requires `tkinterdnd2`).
+*   **Image Analysis:** Analyze the selected images with the chosen prompt.
+*   **Results Display:** View the generated text for each image.
+*   **Actions:**
+    *   Copy the results to the clipboard.
+    *   Save the results to a text file.
+    *   Clear the results and file selection.
 
 ## License
 
