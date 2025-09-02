@@ -16,3 +16,8 @@ gptqmodel
 pillow
 tqdm
 python-dotenv
+
+#UI libraries
+pyperclip>=1.8.2
+# Drag and drop functionality
+tkinterdnd2>=0.3.0
