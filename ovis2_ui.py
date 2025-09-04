@@ -522,7 +522,7 @@ class Ovis2ImageAnalyzerUI:
                 successful += 1
                 response = result['response']
                 self.results_text.insert(tk.END, f"{response}\n")
-                all_responses.append(f"{filename}:\n{response}")
+                all_responses.append(f"{response}")
             else:
                 error_msg = result['error']
                 self.results_text.insert(tk.END, f"Error: {error_msg}\n")
